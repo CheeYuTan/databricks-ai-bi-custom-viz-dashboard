@@ -16,17 +16,17 @@ An executive-facing page with product-style KPI cards, a gauge scorecard, fare m
 
 ![Executive infographic dashboard page](assets/executive-infographic.png)
 
-### Time Patterns
+### Custom Viz Gallery: Trends And Comparisons
 
-Custom Viz patterns for annotated daily trends, labeled hourly demand, and a compact calendar heatmap.
+Custom Viz patterns for annotated daily trends, labeled hourly demand, dumbbell comparisons, and butterfly distributions.
 
-![Time patterns dashboard page](assets/time-patterns.png)
+![Custom Viz gallery trends and comparisons](assets/time-patterns.png)
 
-### Pattern Gallery
+### Custom Viz Gallery: Matrices And Variance
 
-Reusable patterns including a radar chart, fare-distance matrix, and radial composition chart.
+Reusable patterns including a fare-distance heatmap, radial fare composition, and variance-to-baseline chart.
 
-![Pattern gallery dashboard page](assets/pattern-gallery.png)
+![Custom Viz gallery matrices and variance](assets/pattern-gallery.png)
 
 ## Files
 
