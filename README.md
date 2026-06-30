@@ -8,6 +8,26 @@ The dashboard uses only public Databricks sample data:
 samples.nyctaxi.trips
 ```
 
+## Preview
+
+### Executive Infographic
+
+An executive-facing page with product-style KPI cards, a gauge scorecard, fare mix, and trip profile summary.
+
+![Executive infographic dashboard page](assets/executive-infographic.png)
+
+### Time Patterns
+
+Custom Viz patterns for annotated daily trends, labeled hourly demand, and a compact calendar heatmap.
+
+![Time patterns dashboard page](assets/time-patterns.png)
+
+### Pattern Gallery
+
+Reusable patterns including a radar chart, fare-distance matrix, and radial composition chart.
+
+![Pattern gallery dashboard page](assets/pattern-gallery.png)
+
 ## Files
 
 - `nyc_taxi_custom_viz_dashboard.lvdash.json` - Importable AI/BI dashboard file.
