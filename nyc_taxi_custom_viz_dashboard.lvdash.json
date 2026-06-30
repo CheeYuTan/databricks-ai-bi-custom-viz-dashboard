@@ -1,0 +1,1379 @@
+{
+  "datasets": [
+    {
+      "name": "kpi_summary",
+      "displayName": "KPI Summary",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT trip_distance, fare_amount, unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime) AS duration_seconds\n",
+        "  FROM samples.nyctaxi.trips\n",
+        "  WHERE fare_amount > 0 AND trip_distance > 0 AND tpep_dropoff_datetime > tpep_pickup_datetime\n",
+        ")\n",
+        "SELECT\n",
+        "  COUNT(*) AS total_trips,\n",
+        "  format_number(COUNT(*), 0) AS total_trips_label,\n",
+        "  ROUND(AVG(fare_amount), 2) AS avg_fare,\n",
+        "  CONCAT('$', CAST(ROUND(AVG(fare_amount), 2) AS STRING)) AS avg_fare_label,\n",
+        "  ROUND(AVG(trip_distance), 2) AS avg_distance,\n",
+        "  CONCAT(CAST(ROUND(AVG(trip_distance), 2) AS STRING), ' mi') AS avg_distance_label,\n",
+        "  ROUND(AVG(duration_seconds) / 60, 1) AS avg_minutes,\n",
+        "  CONCAT(CAST(ROUND(AVG(duration_seconds) / 60, 1) AS STRING), ' min') AS avg_minutes_label,\n",
+        "  ROUND(AVG(CASE WHEN fare_amount / trip_distance BETWEEN 2 AND 12 AND duration_seconds BETWEEN 180 AND 3600 THEN 1.0 ELSE 0.0 END), 3) AS trip_quality_rate,\n",
+        "  CONCAT(CAST(ROUND(100 * AVG(CASE WHEN fare_amount / trip_distance BETWEEN 2 AND 12 AND duration_seconds BETWEEN 180 AND 3600 THEN 1.0 ELSE 0.0 END), 1) AS STRING), '%') AS quality_label,\n",
+        "  ROUND(AVG(CASE WHEN trip_distance <= 2 THEN 1.0 ELSE 0.0 END), 3) AS short_trip_share,\n",
+        "  ROUND(AVG(CASE WHEN fare_amount > 50 OR trip_distance > 15 OR duration_seconds > 3600 THEN 1.0 ELSE 0.0 END), 3) AS exception_rate,\n",
+        "  CONCAT(CAST(ROUND(100 * AVG(CASE WHEN fare_amount > 50 OR trip_distance > 15 OR duration_seconds > 3600 THEN 1.0 ELSE 0.0 END), 1) AS STRING), '%') AS exception_label\n",
+        "FROM base"
+      ]
+    },
+    {
+      "name": "fare_bands",
+      "displayName": "Fare Bands",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT\n",
+        "    CASE WHEN fare_amount < 10 THEN 'Under $10' WHEN fare_amount < 20 THEN '$10-$20' WHEN fare_amount < 40 THEN '$20-$40' ELSE '$40+' END AS fare_band,\n",
+        "    CASE WHEN fare_amount < 10 THEN 1 WHEN fare_amount < 20 THEN 2 WHEN fare_amount < 40 THEN 3 ELSE 4 END AS sort_order,\n",
+        "    fare_amount, trip_distance\n",
+        "  FROM samples.nyctaxi.trips\n",
+        "  WHERE fare_amount > 0 AND trip_distance > 0\n",
+        "), agg AS (\n",
+        "  SELECT fare_band, sort_order, COUNT(*) AS trips, ROUND(AVG(fare_amount), 2) AS avg_fare, ROUND(AVG(trip_distance), 2) AS avg_distance\n",
+        "  FROM base GROUP BY fare_band, sort_order\n",
+        ")\n",
+        "SELECT fare_band, sort_order, trips, ROUND(trips / SUM(trips) OVER (), 3) AS trip_share, avg_fare, avg_distance\n",
+        "FROM agg ORDER BY sort_order"
+      ]
+    },
+    {
+      "name": "daily_trend",
+      "displayName": "Daily Trip Trend",
+      "queryLines": [
+        "WITH daily AS (\n",
+        "  SELECT\n",
+        "  DATE(tpep_pickup_datetime) AS trip_date,\n",
+        "  COUNT(*) AS trips,\n",
+        "  ROUND(AVG(fare_amount), 2) AS avg_fare,\n",
+        "  ROUND(AVG(trip_distance), 2) AS avg_distance\n",
+        "FROM samples.nyctaxi.trips\n",
+        "WHERE fare_amount > 0 AND trip_distance > 0\n",
+        "GROUP BY DATE(tpep_pickup_datetime)\n",
+        "), ranked AS (\n",
+        "  SELECT *, ROW_NUMBER() OVER (ORDER BY trips DESC, trip_date ASC) AS trip_rank\n",
+        "  FROM daily\n",
+        ")\n",
+        "SELECT trip_date, trips, avg_fare, avg_distance, trip_rank, CASE WHEN trip_rank <= 3 THEN 1 ELSE 0 END AS is_peak\n",
+        "FROM ranked\n",
+        "ORDER BY trip_date"
+      ]
+    },
+    {
+      "name": "hourly_demand",
+      "displayName": "Hourly Demand",
+      "queryLines": [
+        "WITH hourly AS (\n",
+        "  SELECT HOUR(tpep_pickup_datetime) AS pickup_hour, COUNT(*) AS trips, ROUND(AVG(fare_amount), 2) AS avg_fare, ROUND(AVG(trip_distance), 2) AS avg_distance\n",
+        "  FROM samples.nyctaxi.trips\n",
+        "  WHERE fare_amount > 0 AND trip_distance > 0\n",
+        "  GROUP BY HOUR(tpep_pickup_datetime)\n",
+        "), ranked AS (\n",
+        "  SELECT *, ROW_NUMBER() OVER (ORDER BY trips DESC, pickup_hour ASC) AS hour_rank\n",
+        "  FROM hourly\n",
+        ")\n",
+        "SELECT pickup_hour, trips, ROUND(trips / MAX(trips) OVER (), 3) AS demand_index, avg_fare, avg_distance, hour_rank, CASE WHEN hour_rank <= 3 THEN 1 ELSE 0 END AS is_peak_hour\n",
+        "FROM ranked ORDER BY pickup_hour"
+      ]
+    },
+    {
+      "name": "fare_distance_matrix",
+      "displayName": "Fare Distance Matrix",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT\n",
+        "    CASE WHEN trip_distance < 1 THEN '<1 mi' WHEN trip_distance < 3 THEN '1-3 mi' WHEN trip_distance < 7 THEN '3-7 mi' ELSE '7+ mi' END AS distance_band,\n",
+        "    CASE WHEN trip_distance < 1 THEN 1 WHEN trip_distance < 3 THEN 2 WHEN trip_distance < 7 THEN 3 ELSE 4 END AS distance_order,\n",
+        "    CASE WHEN fare_amount < 10 THEN 'Under $10' WHEN fare_amount < 20 THEN '$10-$20' WHEN fare_amount < 40 THEN '$20-$40' ELSE '$40+' END AS fare_band,\n",
+        "    CASE WHEN fare_amount < 10 THEN 1 WHEN fare_amount < 20 THEN 2 WHEN fare_amount < 40 THEN 3 ELSE 4 END AS fare_order,\n",
+        "    fare_amount\n",
+        "  FROM samples.nyctaxi.trips\n",
+        "  WHERE fare_amount > 0 AND trip_distance > 0\n",
+        ")\n",
+        "SELECT distance_band, distance_order, fare_band, fare_order, COUNT(*) AS trips, ROUND(AVG(fare_amount), 2) AS avg_fare\n",
+        "FROM base\n",
+        "GROUP BY distance_band, distance_order, fare_band, fare_order\n",
+        "ORDER BY distance_order, fare_order"
+      ]
+    },
+    {
+      "name": "rush_comparison",
+      "displayName": "AM vs PM Rush",
+      "queryLines": [
+        "WITH base AS (\n",
+        "  SELECT\n",
+        "    HOUR(tpep_pickup_datetime) AS hr,\n",
+        "    fare_amount,\n",
+        "    trip_distance,\n",
+        "    (unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))\n",
+        "      / 60.0 AS duration_min\n",
+        "  FROM\n",
+        "    samples.nyctaxi.trips\n",
+        "  WHERE\n",
+        "    fare_amount > 0\n",
+        "    AND trip_distance > 0\n",
+        "    AND tpep_dropoff_datetime > tpep_pickup_datetime\n",
+        "    AND (\n",
+        "      HOUR(tpep_pickup_datetime) BETWEEN 7 AND 9\n",
+        "      OR HOUR(tpep_pickup_datetime) BETWEEN 17 AND 19\n",
+        "    )\n",
+        "),\n",
+        "agg AS (\n",
+        "  SELECT\n",
+        "    CASE\n",
+        "      WHEN hr BETWEEN 7 AND 9 THEN 'AM Rush'\n",
+        "      ELSE 'PM Rush'\n",
+        "    END AS period,\n",
+        "    ROUND(AVG(duration_min), 1) AS avg_duration,\n",
+        "    COUNT(*) AS trips,\n",
+        "    ROUND(AVG(fare_amount / NULLIF(duration_min, 0)), 2) AS fare_per_min\n",
+        "  FROM\n",
+        "    base\n",
+        "  GROUP BY\n",
+        "    CASE\n",
+        "      WHEN hr BETWEEN 7 AND 9 THEN 'AM Rush'\n",
+        "      ELSE 'PM Rush'\n",
+        "    END\n",
+        "),\n",
+        "long_form AS (\n",
+        "  SELECT\n",
+        "    period,\n",
+        "    'Avg Duration (min)' AS metric,\n",
+        "    avg_duration AS value,\n",
+        "    1 AS sort_order\n",
+        "  FROM\n",
+        "    agg\n",
+        "  UNION ALL\n",
+        "  SELECT\n",
+        "    period,\n",
+        "    'Trip Volume',\n",
+        "    trips,\n",
+        "    2\n",
+        "  FROM\n",
+        "    agg\n",
+        "  UNION ALL\n",
+        "  SELECT\n",
+        "    period,\n",
+        "    'Fare per Minute ($)' AS metric,\n",
+        "    fare_per_min,\n",
+        "    3\n",
+        "  FROM\n",
+        "    agg\n",
+        ")\n",
+        "SELECT\n",
+        "  period,\n",
+        "  metric,\n",
+        "  sort_order,\n",
+        "  value,\n",
+        "  ROUND(value / MAX(value) OVER (PARTITION BY metric), 3) AS norm_value\n",
+        "FROM\n",
+        "  long_form\n",
+        "ORDER BY\n",
+        "  sort_order,\n",
+        "  period"
+      ]
+    },
+    {
+      "name": "hourly_by_daytype",
+      "displayName": "Hourly by Day Type",
+      "queryLines": [
+        "WITH counts AS (\n",
+        "  SELECT\n",
+        "    HOUR(tpep_pickup_datetime) AS pickup_hour,\n",
+        "    CASE\n",
+        "      WHEN DAYOFWEEK(tpep_pickup_datetime) IN (1, 7) THEN 'Weekend'\n",
+        "      ELSE 'Weekday'\n",
+        "    END AS day_type,\n",
+        "    COUNT(*) AS trips\n",
+        "  FROM\n",
+        "    samples.nyctaxi.trips\n",
+        "  WHERE\n",
+        "    fare_amount > 0\n",
+        "    AND trip_distance > 0\n",
+        "  GROUP BY\n",
+        "    HOUR(tpep_pickup_datetime),\n",
+        "    CASE\n",
+        "      WHEN DAYOFWEEK(tpep_pickup_datetime) IN (1, 7) THEN 'Weekend'\n",
+        "      ELSE 'Weekday'\n",
+        "    END\n",
+        "),\n",
+        "day_counts AS (\n",
+        "  SELECT\n",
+        "    CASE\n",
+        "      WHEN DAYOFWEEK(trip_date) IN (1, 7) THEN 'Weekend'\n",
+        "      ELSE 'Weekday'\n",
+        "    END AS day_type,\n",
+        "    COUNT(DISTINCT trip_date) AS num_days\n",
+        "  FROM\n",
+        "    (\n",
+        "      SELECT DISTINCT\n",
+        "        DATE(tpep_pickup_datetime) AS trip_date\n",
+        "      FROM\n",
+        "        samples.nyctaxi.trips\n",
+        "      WHERE\n",
+        "        fare_amount > 0\n",
+        "    )\n",
+        "  GROUP BY\n",
+        "    CASE\n",
+        "      WHEN DAYOFWEEK(trip_date) IN (1, 7) THEN 'Weekend'\n",
+        "      ELSE 'Weekday'\n",
+        "    END\n",
+        ")\n",
+        "SELECT\n",
+        "  c.pickup_hour,\n",
+        "  c.day_type,\n",
+        "  ROUND(c.trips * 1.0 / d.num_days, 1) AS avg_trips_per_day\n",
+        "FROM\n",
+        "  counts c\n",
+        "    JOIN day_counts d\n",
+        "      ON c.day_type = d.day_type\n",
+        "ORDER BY\n",
+        "  c.pickup_hour,\n",
+        "  c.day_type"
+      ]
+    },
+    {
+      "name": "fare_deviation",
+      "displayName": "Fare Deviation by Day",
+      "queryLines": [
+        "WITH daily AS (\n",
+        "  SELECT\n",
+        "    DAYOFWEEK(tpep_pickup_datetime) AS dow,\n",
+        "    CASE DAYOFWEEK(tpep_pickup_datetime)\n",
+        "      WHEN 1 THEN 'Sun'\n",
+        "      WHEN 2 THEN 'Mon'\n",
+        "      WHEN 3 THEN 'Tue'\n",
+        "      WHEN 4 THEN 'Wed'\n",
+        "      WHEN 5 THEN 'Thu'\n",
+        "      WHEN 6 THEN 'Fri'\n",
+        "      WHEN 7 THEN 'Sat'\n",
+        "    END AS day_name,\n",
+        "    ROUND(AVG(fare_amount), 2) AS avg_fare\n",
+        "  FROM\n",
+        "    samples.nyctaxi.trips\n",
+        "  WHERE\n",
+        "    fare_amount > 0\n",
+        "    AND trip_distance > 0\n",
+        "  GROUP BY\n",
+        "    DAYOFWEEK(tpep_pickup_datetime),\n",
+        "    CASE DAYOFWEEK(tpep_pickup_datetime)\n",
+        "      WHEN 1 THEN 'Sun'\n",
+        "      WHEN 2 THEN 'Mon'\n",
+        "      WHEN 3 THEN 'Tue'\n",
+        "      WHEN 4 THEN 'Wed'\n",
+        "      WHEN 5 THEN 'Thu'\n",
+        "      WHEN 6 THEN 'Fri'\n",
+        "      WHEN 7 THEN 'Sat'\n",
+        "    END\n",
+        "),\n",
+        "overall AS (\n",
+        "  SELECT\n",
+        "    ROUND(AVG(fare_amount), 2) AS overall_avg\n",
+        "  FROM\n",
+        "    samples.nyctaxi.trips\n",
+        "  WHERE\n",
+        "    fare_amount > 0\n",
+        "    AND trip_distance > 0\n",
+        ")\n",
+        "SELECT\n",
+        "  d.dow,\n",
+        "  d.day_name,\n",
+        "  d.avg_fare,\n",
+        "  o.overall_avg,\n",
+        "  ROUND(d.avg_fare - o.overall_avg, 2) AS deviation,\n",
+        "  ROUND((d.avg_fare - o.overall_avg) / o.overall_avg * 100, 1) AS pct_change\n",
+        "FROM\n",
+        "  daily d CROSS JOIN overall o\n",
+        "ORDER BY\n",
+        "  d.dow"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "1. Executive Infographic",
+      "layout": [
+        {
+          "widget": {
+            "name": "overview_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Beyond bar charts: an AI/BI Custom Viz infographic"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "overview_subtitle",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Public `samples.nyctaxi.trips` data, shaped into KPI cards, glyphs, gauges, maps, and animated-looking analytical patterns with Vega-Lite."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "metric_trips",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpi_summary",
+                  "fields": [
+                    {
+                      "name": "total_trips_label",
+                      "expression": "`total_trips_label`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"layer\":[{\"mark\":{\"type\":\"circle\",\"x\":43,\"y\":38,\"size\":2100,\"opacity\":0.16},\"encoding\":{\"color\":{\"value\":\"#4C2DA8\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":13,\"x\":43,\"y\":38,\"align\":\"center\",\"baseline\":\"middle\",\"fontWeight\":\"bold\"},\"encoding\":{\"text\":{\"value\":\"TAXI\"},\"color\":{\"value\":\"#4C2DA8\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":32,\"fontWeight\":\"bold\",\"x\":80,\"y\":33,\"align\":\"left\",\"baseline\":\"middle\"},\"encoding\":{\"text\":{\"field\":\"total_trips_label\"},\"color\":{\"value\":\"#4C2DA8\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":12,\"fontWeight\":\"bold\",\"x\":80,\"y\":66,\"align\":\"left\"},\"encoding\":{\"text\":{\"value\":\"Trips in sample\"},\"color\":{\"value\":\"#111827\"}}}]}"
+              },
+              "frame": {
+                "title": "Icon KPI: Trips",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "total_trips_label"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "metric_fare",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpi_summary",
+                  "fields": [
+                    {
+                      "name": "avg_fare_label",
+                      "expression": "`avg_fare_label`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"layer\":[{\"mark\":{\"type\":\"circle\",\"x\":43,\"y\":38,\"size\":2100,\"opacity\":0.16},\"encoding\":{\"color\":{\"value\":\"#2E7D32\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":30,\"x\":43,\"y\":38,\"align\":\"center\",\"baseline\":\"middle\",\"fontWeight\":\"bold\"},\"encoding\":{\"text\":{\"value\":\"$\"},\"color\":{\"value\":\"#2E7D32\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":32,\"fontWeight\":\"bold\",\"x\":80,\"y\":33,\"align\":\"left\",\"baseline\":\"middle\"},\"encoding\":{\"text\":{\"field\":\"avg_fare_label\"},\"color\":{\"value\":\"#4C2DA8\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":12,\"fontWeight\":\"bold\",\"x\":80,\"y\":66,\"align\":\"left\"},\"encoding\":{\"text\":{\"value\":\"Average fare\"},\"color\":{\"value\":\"#111827\"}}}]}"
+              },
+              "frame": {
+                "title": "Icon KPI: Fare",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "avg_fare_label"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "metric_distance",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpi_summary",
+                  "fields": [
+                    {
+                      "name": "avg_distance_label",
+                      "expression": "`avg_distance_label`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"layer\":[{\"mark\":{\"type\":\"circle\",\"x\":43,\"y\":38,\"size\":2100,\"opacity\":0.16},\"encoding\":{\"color\":{\"value\":\"#1E88E5\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":25,\"x\":43,\"y\":38,\"align\":\"center\",\"baseline\":\"middle\",\"fontWeight\":\"bold\"},\"encoding\":{\"text\":{\"value\":\"\u2194\"},\"color\":{\"value\":\"#1E88E5\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":32,\"fontWeight\":\"bold\",\"x\":80,\"y\":33,\"align\":\"left\",\"baseline\":\"middle\"},\"encoding\":{\"text\":{\"field\":\"avg_distance_label\"},\"color\":{\"value\":\"#4C2DA8\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":12,\"fontWeight\":\"bold\",\"x\":80,\"y\":66,\"align\":\"left\"},\"encoding\":{\"text\":{\"value\":\"Average distance\"},\"color\":{\"value\":\"#111827\"}}}]}"
+              },
+              "frame": {
+                "title": "Icon KPI: Distance",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "avg_distance_label"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "metric_exception",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpi_summary",
+                  "fields": [
+                    {
+                      "name": "exception_label",
+                      "expression": "`exception_label`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"layer\":[{\"mark\":{\"type\":\"circle\",\"x\":43,\"y\":38,\"size\":2100,\"opacity\":0.16},\"encoding\":{\"color\":{\"value\":\"#E45756\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":30,\"x\":43,\"y\":38,\"align\":\"center\",\"baseline\":\"middle\",\"fontWeight\":\"bold\"},\"encoding\":{\"text\":{\"value\":\"!\"},\"color\":{\"value\":\"#E45756\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":32,\"fontWeight\":\"bold\",\"x\":80,\"y\":33,\"align\":\"left\",\"baseline\":\"middle\"},\"encoding\":{\"text\":{\"field\":\"exception_label\"},\"color\":{\"value\":\"#4C2DA8\"}}},{\"mark\":{\"type\":\"text\",\"fontSize\":12,\"fontWeight\":\"bold\",\"x\":80,\"y\":66,\"align\":\"left\"},\"encoding\":{\"text\":{\"value\":\"Exception rate\"},\"color\":{\"value\":\"#111827\"}}}]}"
+              },
+              "frame": {
+                "title": "Icon KPI: Exceptions",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "exception_label"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 9,
+            "y": 2,
+            "width": 3,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "quality_gauge",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpi_summary",
+                  "fields": [
+                    {
+                      "name": "trip_quality_rate",
+                      "expression": "`trip_quality_rate`"
+                    },
+                    {
+                      "name": "total_trips",
+                      "expression": "`total_trips`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    },
+                    {
+                      "name": "avg_distance",
+                      "expression": "`avg_distance`"
+                    },
+                    {
+                      "name": "exception_rate",
+                      "expression": "`exception_rate`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"transform\":[{\"calculate\":\"220\",\"as\":\"arc_size\"},{\"calculate\":\"2 * PI * (360 - datum.arc_size / 2 - 360) / 360\",\"as\":\"start\"},{\"calculate\":\"2 * PI * (datum.arc_size / 2) / 360\",\"as\":\"end\"},{\"calculate\":\"datum.start + ((datum.end - datum.start) * datum.trip_quality_rate)\",\"as\":\"quality_end\"},{\"calculate\":\"format(datum.total_trips, ',') + ' trips analyzed'\",\"as\":\"trip_label\"},{\"calculate\":\"'$' + format(datum.avg_fare, '.2f') + ' avg fare'\",\"as\":\"fare_label\"},{\"calculate\":\"format(datum.exception_rate, '.1%') + ' exception rate'\",\"as\":\"exception_label\"}],\"layer\":[{\"mark\":{\"type\":\"arc\",\"innerRadius\":68,\"outerRadius\":93,\"cornerRadius\":14,\"color\":\"#E7E2F4\",\"theta\":{\"expr\":\"datum.start\"},\"theta2\":{\"expr\":\"datum.end\"}}},{\"mark\":{\"type\":\"arc\",\"innerRadius\":68,\"outerRadius\":93,\"cornerRadius\":14,\"color\":\"#4C2DA8\",\"theta\":{\"expr\":\"datum.start\"},\"theta2\":{\"expr\":\"datum.quality_end\"}}},{\"mark\":{\"type\":\"text\",\"dy\":-6,\"fontSize\":42,\"fontWeight\":\"bold\",\"color\":\"#4C2DA8\"},\"encoding\":{\"text\":{\"field\":\"trip_quality_rate\",\"type\":\"quantitative\",\"format\":\".1%\"}}},{\"mark\":{\"type\":\"text\",\"dy\":32,\"fontSize\":13,\"fontWeight\":\"bold\",\"color\":\"#111827\"},\"encoding\":{\"text\":{\"value\":\"Trip quality score\"}}},{\"mark\":{\"type\":\"text\",\"dy\":58,\"fontSize\":12,\"color\":\"#6B7280\"},\"encoding\":{\"text\":{\"field\":\"trip_label\"}}},{\"mark\":{\"type\":\"text\",\"dy\":78,\"fontSize\":12,\"color\":\"#6B7280\"},\"encoding\":{\"text\":{\"field\":\"fare_label\"}}},{\"mark\":{\"type\":\"text\",\"dy\":98,\"fontSize\":12,\"color\":\"#B45309\"},\"encoding\":{\"text\":{\"field\":\"exception_label\"}}}],\"view\":{\"stroke\":null}}"
+              },
+              "frame": {
+                "title": "Gauge Card: Trip Quality",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "trip_quality_rate"
+                  },
+                  {
+                    "fieldName": "total_trips"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  },
+                  {
+                    "fieldName": "avg_distance"
+                  },
+                  {
+                    "fieldName": "exception_rate"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "fare_mix",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "fare_bands",
+                  "fields": [
+                    {
+                      "name": "fare_band",
+                      "expression": "`fare_band`"
+                    },
+                    {
+                      "name": "sort_order",
+                      "expression": "`sort_order`"
+                    },
+                    {
+                      "name": "trips",
+                      "expression": "`trips`"
+                    },
+                    {
+                      "name": "trip_share",
+                      "expression": "`trip_share`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"transform\":[{\"calculate\":\"format(datum.trip_share, '.0%')\",\"as\":\"share_label\"}],\"layer\":[{\"mark\":{\"type\":\"bar\",\"height\":18,\"cornerRadiusEnd\":9,\"color\":\"#EDE7F6\"},\"encoding\":{\"y\":{\"field\":\"fare_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"sort_order\"},\"title\":null},\"x\":{\"datum\":0.6,\"type\":\"quantitative\",\"axis\":null}}},{\"mark\":{\"type\":\"bar\",\"height\":18,\"cornerRadiusEnd\":9},\"encoding\":{\"y\":{\"field\":\"fare_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"sort_order\"},\"title\":null},\"x\":{\"field\":\"trip_share\",\"type\":\"quantitative\",\"axis\":null,\"scale\":{\"domain\":[0,0.6]}},\"color\":{\"field\":\"fare_band\",\"type\":\"nominal\",\"legend\":null,\"scale\":{\"range\":[\"#4C2DA8\",\"#1E88E5\",\"#FFB000\",\"#E45756\"]}}}},{\"mark\":{\"type\":\"text\",\"align\":\"left\",\"dx\":6,\"fontSize\":12,\"fontWeight\":\"bold\",\"color\":\"#111827\"},\"encoding\":{\"y\":{\"field\":\"fare_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"sort_order\"}},\"x\":{\"field\":\"trip_share\",\"type\":\"quantitative\",\"scale\":{\"domain\":[0,0.6]}},\"text\":{\"field\":\"share_label\"}}}],\"encoding\":{\"tooltip\":[{\"field\":\"fare_band\",\"title\":\"Fare band\"},{\"field\":\"trips\",\"title\":\"Trips\",\"format\":\",\"},{\"field\":\"trip_share\",\"title\":\"Share\",\"format\":\".1%\"},{\"field\":\"avg_fare\",\"title\":\"Avg fare\",\"format\":\"$.2f\"}]},\"view\":{\"stroke\":null}}"
+              },
+              "frame": {
+                "title": "Infographic Bars: Fare Mix",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "fare_band"
+                  },
+                  {
+                    "fieldName": "sort_order"
+                  },
+                  {
+                    "fieldName": "trips"
+                  },
+                  {
+                    "fieldName": "trip_share"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 5,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "trip_profile",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "kpi_summary",
+                  "fields": [
+                    {
+                      "name": "short_trip_share",
+                      "expression": "`short_trip_share`"
+                    },
+                    {
+                      "name": "exception_rate",
+                      "expression": "`exception_rate`"
+                    },
+                    {
+                      "name": "avg_minutes_label",
+                      "expression": "`avg_minutes_label`"
+                    },
+                    {
+                      "name": "avg_distance_label",
+                      "expression": "`avg_distance_label`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"transform\":[{\"fold\":[\"short_trip_share\",\"exception_rate\"],\"as\":[\"metric\",\"value\"]},{\"calculate\":\"{'short_trip_share': 'Short trips (\u22642 mi)', 'exception_rate': 'Exceptions'}[datum.metric]\",\"as\":\"metric_label\"},{\"calculate\":\"{'short_trip_share': 1, 'exception_rate': 2}[datum.metric]\",\"as\":\"metric_order\"},{\"calculate\":\"format(datum.value, '.1%')\",\"as\":\"value_label\"}],\"layer\":[{\"mark\":{\"type\":\"text\",\"x\":20,\"y\":24,\"align\":\"left\",\"fontSize\":13,\"fontWeight\":\"bold\",\"color\":\"#111827\"},\"encoding\":{\"text\":{\"value\":\"Trip profile at a glance\"}}},{\"mark\":{\"type\":\"text\",\"x\":20,\"y\":47,\"align\":\"left\",\"fontSize\":11,\"color\":\"#6B7280\"},\"encoding\":{\"text\":{\"field\":\"avg_minutes_label\"}}},{\"mark\":{\"type\":\"bar\",\"height\":20,\"cornerRadiusEnd\":9,\"color\":\"#EDE7F6\"},\"encoding\":{\"y\":{\"field\":\"metric_label\",\"type\":\"ordinal\",\"sort\":{\"field\":\"metric_order\"},\"title\":null},\"x\":{\"datum\":1,\"type\":\"quantitative\",\"axis\":null}}},{\"mark\":{\"type\":\"bar\",\"height\":20,\"cornerRadiusEnd\":9},\"encoding\":{\"y\":{\"field\":\"metric_label\",\"type\":\"ordinal\",\"sort\":{\"field\":\"metric_order\"},\"title\":null},\"x\":{\"field\":\"value\",\"type\":\"quantitative\",\"axis\":null,\"scale\":{\"domain\":[0,1]}},\"color\":{\"field\":\"metric_label\",\"type\":\"nominal\",\"legend\":null,\"scale\":{\"range\":[\"#1E88E5\",\"#E45756\"]}}}},{\"mark\":{\"type\":\"text\",\"align\":\"left\",\"dx\":8,\"fontSize\":12,\"fontWeight\":\"bold\",\"color\":\"#111827\"},\"encoding\":{\"y\":{\"field\":\"metric_label\",\"type\":\"ordinal\",\"sort\":{\"field\":\"metric_order\"}},\"x\":{\"field\":\"value\",\"type\":\"quantitative\",\"scale\":{\"domain\":[0,1]}},\"text\":{\"field\":\"value_label\"}}}],\"view\":{\"stroke\":null}}"
+              },
+              "frame": {
+                "title": "Trip Profile: Short Trips and Exceptions",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "short_trip_share"
+                  },
+                  {
+                    "fieldName": "exception_rate"
+                  },
+                  {
+                    "fieldName": "avg_minutes_label"
+                  },
+                  {
+                    "fieldName": "avg_distance_label"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 8,
+            "y": 5,
+            "width": 4,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "overview_lesson",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**Copy this pattern:** use one-row SQL summaries plus layered text/arc marks to create app-like executive KPI cards directly inside AI/BI dashboards."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 12,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    },
+    {
+      "name": "time_patterns",
+      "displayName": "2. Custom Viz Gallery",
+      "layout": [
+        {
+          "widget": {
+            "name": "time_title",
+            "multilineTextboxSpec": {
+              "lines": [
+                "## Custom Viz Gallery: Time, Shape & Comparison"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "time_subtitle",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Seven Vega-Lite patterns from the same taxi dataset: rolling trends, hourly profiles, heatmap matrices, radial composition, dumbbell comparisons, butterfly distributions, and variance charts with colored \u25b2\u25bc indicators."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 1,
+            "width": 12,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "time_daily_trend",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "daily_trend",
+                  "fields": [
+                    {
+                      "name": "trip_date",
+                      "expression": "`trip_date`"
+                    },
+                    {
+                      "name": "trips",
+                      "expression": "`trips`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    },
+                    {
+                      "name": "avg_distance",
+                      "expression": "`avg_distance`"
+                    },
+                    {
+                      "name": "trip_rank",
+                      "expression": "`trip_rank`"
+                    },
+                    {
+                      "name": "is_peak",
+                      "expression": "`is_peak`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"transform\":[{\"window\":[{\"field\":\"trips\",\"op\":\"mean\",\"as\":\"rolling_trips\"}],\"frame\":[-3,3],\"sort\":[{\"field\":\"trip_date\",\"order\":\"ascending\"}]}],\"layer\":[{\"mark\":{\"type\":\"area\",\"line\":false,\"opacity\":0.22,\"color\":\"#56A8E8\"},\"encoding\":{\"x\":{\"field\":\"trip_date\",\"type\":\"temporal\",\"title\":null},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\",\"title\":\"Trips\",\"axis\":{\"format\":\",\"}},\"tooltip\":[{\"field\":\"trip_date\",\"type\":\"temporal\",\"title\":\"Date\"},{\"field\":\"trips\",\"type\":\"quantitative\",\"title\":\"Trips\",\"format\":\",\"},{\"field\":\"avg_fare\",\"type\":\"quantitative\",\"title\":\"Avg fare\",\"format\":\"$.2f\"}]}},{\"mark\":{\"type\":\"line\",\"interpolate\":\"monotone\",\"strokeWidth\":4,\"color\":\"#4C2DA8\"},\"encoding\":{\"x\":{\"field\":\"trip_date\",\"type\":\"temporal\"},\"y\":{\"field\":\"rolling_trips\",\"type\":\"quantitative\"}}},{\"mark\":{\"type\":\"point\",\"filled\":true,\"size\":60,\"color\":\"#FFB000\"},\"encoding\":{\"x\":{\"field\":\"trip_date\",\"type\":\"temporal\"},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\"},\"opacity\":{\"condition\":{\"test\":\"datum.is_peak == 1\",\"value\":1},\"value\":0}}},{\"mark\":{\"type\":\"text\",\"align\":\"right\",\"dx\":-8,\"dy\":-12,\"fontSize\":11,\"fontWeight\":\"bold\",\"color\":\"#B45309\"},\"encoding\":{\"x\":{\"field\":\"trip_date\",\"type\":\"temporal\"},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\"},\"text\":{\"condition\":{\"test\":\"datum.is_peak == 1\",\"value\":\"top 3 day\"},\"value\":\"\"}}}],\"view\":{\"stroke\":null}}"
+              },
+              "frame": {
+                "title": "Rolling Demand Story",
+                "showTitle": true
+              },
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "trip_date"
+                  },
+                  {
+                    "fieldName": "trips"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  },
+                  {
+                    "fieldName": "avg_distance"
+                  },
+                  {
+                    "fieldName": "trip_rank"
+                  },
+                  {
+                    "fieldName": "is_peak"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "hourly_profile",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "hourly_demand",
+                  "fields": [
+                    {
+                      "name": "pickup_hour",
+                      "expression": "`pickup_hour`"
+                    },
+                    {
+                      "name": "trips",
+                      "expression": "`trips`"
+                    },
+                    {
+                      "name": "demand_index",
+                      "expression": "`demand_index`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    },
+                    {
+                      "name": "hour_rank",
+                      "expression": "`hour_rank`"
+                    },
+                    {
+                      "name": "is_peak_hour",
+                      "expression": "`is_peak_hour`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"data\":{\"name\":\"databricks_query\"},\"height\":\"container\",\"width\":\"container\",\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null},\"axis\":{\"labelColor\":\"#6B7280\",\"titleColor\":\"#6B7280\",\"gridColor\":\"#F1F5F9\"}},\"transform\":[{\"calculate\":\"datum.pickup_hour + ':00'\",\"as\":\"hour_label\"},{\"calculate\":\"datum.is_peak_hour == 1 ? 'Peak' : ''\",\"as\":\"peak_label\"}],\"layer\":[{\"mark\":{\"type\":\"bar\",\"cornerRadiusEnd\":4,\"opacity\":0.35,\"color\":\"#56A8E8\"},\"encoding\":{\"x\":{\"field\":\"pickup_hour\",\"type\":\"ordinal\",\"title\":\"Pickup hour\",\"axis\":{\"labelAngle\":0,\"labelExpr\":\"datum.value % 3 == 0 ? datum.value : ''\"}},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\",\"title\":\"Trips\",\"axis\":{\"format\":\",\"}}}},{\"mark\":{\"type\":\"line\",\"interpolate\":\"monotone\",\"strokeWidth\":4,\"color\":\"#4C2DA8\"},\"encoding\":{\"x\":{\"field\":\"pickup_hour\",\"type\":\"ordinal\"},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\"}}},{\"mark\":{\"size\":90,\"stroke\":\"white\",\"color\":\"#FFB000\",\"type\":\"point\",\"filled\":true},\"encoding\":{\"x\":{\"field\":\"pickup_hour\",\"type\":\"ordinal\"},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\"},\"opacity\":{\"condition\":{\"test\":\"datum.is_peak_hour == 1\",\"value\":1},\"value\":0},\"tooltip\":[{\"field\":\"hour_label\",\"title\":\"Hour\"},{\"field\":\"trips\",\"title\":\"Trips\",\"format\":\",\"},{\"field\":\"avg_fare\",\"title\":\"Avg fare\",\"format\":\"$.2f\"}]}},{\"mark\":{\"dy\":-14,\"color\":\"#B45309\",\"fontSize\":11,\"type\":\"text\",\"fontWeight\":\"bold\"},\"encoding\":{\"x\":{\"field\":\"pickup_hour\",\"type\":\"ordinal\"},\"y\":{\"field\":\"trips\",\"type\":\"quantitative\"},\"text\":{\"field\":\"peak_label\"}}}]}"
+              },
+              "frame": {
+                "title": "Labeled Hourly Demand Profile",
+                "showTitle": true
+              },
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "pickup_hour"
+                  },
+                  {
+                    "fieldName": "trips"
+                  },
+                  {
+                    "fieldName": "demand_index"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  },
+                  {
+                    "fieldName": "hour_rank"
+                  },
+                  {
+                    "fieldName": "is_peak_hour"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 2,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "time_lesson",
+            "multilineTextboxSpec": {
+              "lines": [
+                "**Copy these patterns:** each chart uses `custom-vega-viz` with a compact SQL dataset. The dumbbell normalizes metrics to a common scale; the butterfly mirrors one category to create a mirrored distribution; the variance chart uses diverging bars from a reference line with colored \u25b2\u25bc indicators."
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 26,
+            "width": 12,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "dumbbell_rush",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "rush_comparison",
+                  "fields": [
+                    {
+                      "name": "period",
+                      "expression": "`period`"
+                    },
+                    {
+                      "name": "metric",
+                      "expression": "`metric`"
+                    },
+                    {
+                      "name": "sort_order",
+                      "expression": "`sort_order`"
+                    },
+                    {
+                      "name": "value",
+                      "expression": "`value`"
+                    },
+                    {
+                      "name": "norm_value",
+                      "expression": "`norm_value`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"data\":{\"name\":\"databricks_query\"},\"height\":\"container\",\"width\":\"container\",\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}},\"transform\":[{\"calculate\":\"datum.metric == 'Avg Duration (min)' ? format(datum.value, '.1f') + ' min' : datum.metric == 'Trip Volume' ? format(datum.value, ',d') : '$' + format(datum.value, '.2f') + '/min'\",\"as\":\"value_label\"}],\"layer\":[{\"mark\":{\"type\":\"rule\",\"color\":\"#D1D5DB\",\"strokeWidth\":3},\"encoding\":{\"y\":{\"field\":\"metric\",\"type\":\"ordinal\",\"sort\":{\"field\":\"sort_order\"},\"title\":null,\"axis\":{\"labelFontSize\":11,\"labelFontWeight\":\"bold\"}},\"x\":{\"aggregate\":\"min\",\"field\":\"norm_value\",\"type\":\"quantitative\",\"scale\":{\"domain\":[0.55,1.1]},\"title\":null,\"axis\":null},\"x2\":{\"aggregate\":\"max\",\"field\":\"norm_value\"}}},{\"mark\":{\"type\":\"point\",\"filled\":true,\"size\":250,\"stroke\":\"white\",\"strokeWidth\":2},\"encoding\":{\"y\":{\"field\":\"metric\",\"type\":\"ordinal\",\"sort\":{\"field\":\"sort_order\"}},\"x\":{\"field\":\"norm_value\",\"type\":\"quantitative\"},\"color\":{\"field\":\"period\",\"type\":\"nominal\",\"scale\":{\"domain\":[\"AM Rush\",\"PM Rush\"],\"range\":[\"#FFB000\",\"#4C2DA8\"]},\"legend\":{\"orient\":\"top\",\"title\":null}},\"tooltip\":[{\"field\":\"period\"},{\"field\":\"metric\"},{\"field\":\"value_label\",\"title\":\"Value\"}]}},{\"mark\":{\"type\":\"text\",\"fontSize\":11,\"dy\":-16,\"fontWeight\":\"bold\"},\"encoding\":{\"y\":{\"field\":\"metric\",\"type\":\"ordinal\",\"sort\":{\"field\":\"sort_order\"}},\"x\":{\"field\":\"norm_value\",\"type\":\"quantitative\"},\"text\":{\"field\":\"value_label\"},\"color\":{\"field\":\"period\",\"type\":\"nominal\",\"scale\":{\"domain\":[\"AM Rush\",\"PM Rush\"],\"range\":[\"#B45309\",\"#4C2DA8\"]},\"legend\":null}}}]}"
+              },
+              "frame": {
+                "title": "Dumbbell: AM vs PM Rush",
+                "showTitle": true
+              },
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "period"
+                  },
+                  {
+                    "fieldName": "metric"
+                  },
+                  {
+                    "fieldName": "sort_order"
+                  },
+                  {
+                    "fieldName": "value"
+                  },
+                  {
+                    "fieldName": "norm_value"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "butterfly_hourly",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "hourly_by_daytype",
+                  "fields": [
+                    {
+                      "name": "pickup_hour",
+                      "expression": "`pickup_hour`"
+                    },
+                    {
+                      "name": "day_type",
+                      "expression": "`day_type`"
+                    },
+                    {
+                      "name": "avg_trips_per_day",
+                      "expression": "`avg_trips_per_day`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"width\":\"container\",\"height\":\"container\",\"data\":{\"name\":\"databricks_query\"},\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}},\"transform\":[{\"calculate\":\"datum.day_type == 'Weekday' ? -datum.avg_trips_per_day : datum.avg_trips_per_day\",\"as\":\"directed_trips\"},{\"calculate\":\"abs(datum.directed_trips)\",\"as\":\"abs_trips\"},{\"calculate\":\"datum.pickup_hour + ':00'\",\"as\":\"hour_label\"}],\"layer\":[{\"mark\":{\"type\":\"bar\",\"cornerRadius\":3},\"encoding\":{\"y\":{\"field\":\"pickup_hour\",\"type\":\"ordinal\",\"title\":\"Hour\",\"sort\":\"ascending\",\"axis\":{\"labelExpr\":\"datum.value + ':00'\",\"labelFontSize\":9}},\"x\":{\"field\":\"directed_trips\",\"type\":\"quantitative\",\"title\":\"Avg trips per day\",\"axis\":{\"labelExpr\":\"abs(datum.value)\",\"format\":\"d\"}},\"color\":{\"field\":\"day_type\",\"type\":\"nominal\",\"scale\":{\"domain\":[\"Weekday\",\"Weekend\"],\"range\":[\"#4C2DA8\",\"#E45756\"]},\"legend\":{\"orient\":\"top\",\"title\":null}},\"tooltip\":[{\"field\":\"hour_label\",\"title\":\"Hour\"},{\"field\":\"day_type\"},{\"field\":\"abs_trips\",\"title\":\"Avg trips/day\",\"format\":\".0f\"}]}},{\"mark\":{\"type\":\"rule\",\"color\":\"#6B7280\",\"strokeWidth\":1,\"strokeDash\":[4,4]},\"encoding\":{\"x\":{\"datum\":0}}}]}"
+              },
+              "frame": {
+                "title": "Butterfly: Weekday vs Weekend Demand",
+                "showTitle": true
+              },
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "pickup_hour"
+                  },
+                  {
+                    "fieldName": "day_type"
+                  },
+                  {
+                    "fieldName": "avg_trips_per_day"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 8,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "heat_map",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "fare_distance_matrix",
+                  "fields": [
+                    {
+                      "name": "distance_band",
+                      "expression": "`distance_band`"
+                    },
+                    {
+                      "name": "distance_order",
+                      "expression": "`distance_order`"
+                    },
+                    {
+                      "name": "fare_band",
+                      "expression": "`fare_band`"
+                    },
+                    {
+                      "name": "fare_order",
+                      "expression": "`fare_order`"
+                    },
+                    {
+                      "name": "trips",
+                      "expression": "`trips`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"data\":{\"name\":\"databricks_query\"},\"height\":\"container\",\"width\":\"container\",\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}},\"transform\":[{\"calculate\":\"datum.trips > 0 ? format(datum.trips, ',') : ''\",\"as\":\"trip_label\"}],\"layer\":[{\"mark\":{\"type\":\"rect\",\"cornerRadius\":4},\"encoding\":{\"x\":{\"field\":\"fare_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"fare_order\"},\"title\":\"Fare band\",\"axis\":{\"labelAngle\":-30,\"labelFontSize\":9}},\"y\":{\"field\":\"distance_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"distance_order\"},\"title\":\"Distance\"},\"color\":{\"field\":\"trips\",\"type\":\"quantitative\",\"scale\":{\"scheme\":\"purples\"},\"legend\":{\"title\":\"Trips\",\"orient\":\"bottom\"}},\"tooltip\":[{\"field\":\"distance_band\",\"title\":\"Distance\"},{\"field\":\"fare_band\",\"title\":\"Fare\"},{\"field\":\"trips\",\"title\":\"Trips\",\"format\":\",\"},{\"field\":\"avg_fare\",\"title\":\"Avg fare\",\"format\":\"$.2f\"}]}},{\"mark\":{\"type\":\"text\",\"fontSize\":10,\"fontWeight\":\"bold\"},\"encoding\":{\"x\":{\"field\":\"fare_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"fare_order\"}},\"y\":{\"field\":\"distance_band\",\"type\":\"ordinal\",\"sort\":{\"field\":\"distance_order\"}},\"text\":{\"field\":\"trip_label\"},\"color\":{\"condition\":{\"test\":\"datum.trips > 3000\",\"value\":\"white\"},\"value\":\"#374151\"}}}]}"
+              },
+              "frame": {
+                "title": "Heatmap: Fare \u00d7 Distance",
+                "showTitle": true
+              },
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "distance_band"
+                  },
+                  {
+                    "fieldName": "distance_order"
+                  },
+                  {
+                    "fieldName": "fare_band"
+                  },
+                  {
+                    "fieldName": "fare_order"
+                  },
+                  {
+                    "fieldName": "trips"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 14,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "donut_fare",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "fare_bands",
+                  "fields": [
+                    {
+                      "name": "fare_band",
+                      "expression": "`fare_band`"
+                    },
+                    {
+                      "name": "sort_order",
+                      "expression": "`sort_order`"
+                    },
+                    {
+                      "name": "trips",
+                      "expression": "`trips`"
+                    },
+                    {
+                      "name": "trip_share",
+                      "expression": "`trip_share`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"data\":{\"name\":\"databricks_query\"},\"height\":\"container\",\"width\":\"container\",\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}},\"transform\":[{\"window\":[{\"op\":\"sum\",\"field\":\"trips\",\"as\":\"total\"}],\"frame\":[null,null]},{\"calculate\":\"datum.trips / datum.total\",\"as\":\"share\"},{\"calculate\":\"format(datum.share, '.0%')\",\"as\":\"share_label\"}],\"layer\":[{\"mark\":{\"outerRadius\":90,\"cornerRadius\":6,\"padAngle\":0.02,\"innerRadius\":45,\"type\":\"arc\"},\"encoding\":{\"theta\":{\"field\":\"trips\",\"type\":\"quantitative\",\"stack\":true},\"color\":{\"field\":\"fare_band\",\"type\":\"nominal\",\"sort\":{\"field\":\"sort_order\"},\"scale\":{\"range\":[\"#4C2DA8\",\"#1E88E5\",\"#FFB000\",\"#E45756\"]},\"legend\":{\"orient\":\"bottom\",\"title\":null}},\"tooltip\":[{\"field\":\"fare_band\",\"title\":\"Fare band\"},{\"field\":\"trips\",\"title\":\"Trips\",\"format\":\",\"},{\"field\":\"share_label\",\"title\":\"Share\"}]}},{\"mark\":{\"type\":\"text\",\"fontSize\":18,\"fontWeight\":\"bold\",\"color\":\"#4C2DA8\"},\"encoding\":{\"text\":{\"value\":\"Fare mix\"}}}]}"
+              },
+              "frame": {
+                "title": "Radial: Fare Composition",
+                "showTitle": true
+              },
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "fare_band"
+                  },
+                  {
+                    "fieldName": "sort_order"
+                  },
+                  {
+                    "fieldName": "trips"
+                  },
+                  {
+                    "fieldName": "trip_share"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 6,
+            "y": 14,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "variance_dow",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "fare_deviation",
+                  "fields": [
+                    {
+                      "name": "dow",
+                      "expression": "`dow`"
+                    },
+                    {
+                      "name": "day_name",
+                      "expression": "`day_name`"
+                    },
+                    {
+                      "name": "avg_fare",
+                      "expression": "`avg_fare`"
+                    },
+                    {
+                      "name": "overall_avg",
+                      "expression": "`overall_avg`"
+                    },
+                    {
+                      "name": "deviation",
+                      "expression": "`deviation`"
+                    },
+                    {
+                      "name": "pct_change",
+                      "expression": "`pct_change`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "jsonSpec": {
+                "type": "vega-lite",
+                "spec": "{\"data\":{\"name\":\"databricks_query\"},\"height\":\"container\",\"width\":\"container\",\"$schema\":\"https://vega.github.io/schema/vega-lite/v5.json\",\"config\":{\"autosize\":{\"type\":\"fit\",\"contains\":\"padding\"},\"view\":{\"stroke\":null}},\"transform\":[{\"calculate\":\"datum.deviation >= 0 ? 'Above avg' : 'Below avg'\",\"as\":\"direction\"},{\"calculate\":\"(datum.deviation >= 0 ? '\\u25b2 +' : '\\u25bc ') + format(abs(datum.pct_change), '.1f') + '%'\",\"as\":\"change_label\"}],\"layer\":[{\"mark\":{\"type\":\"rule\",\"color\":\"#9CA3AF\",\"strokeWidth\":1.5,\"strokeDash\":[4,4]},\"encoding\":{\"x\":{\"field\":\"overall_avg\",\"type\":\"quantitative\",\"scale\":{\"domain\":[11.4,13.1]},\"axis\":{\"title\":\"Avg Fare\",\"format\":\"$.2f\"}}}},{\"mark\":{\"type\":\"bar\",\"cornerRadius\":4,\"height\":18},\"encoding\":{\"y\":{\"field\":\"day_name\",\"type\":\"ordinal\",\"sort\":{\"field\":\"dow\"},\"title\":null,\"axis\":{\"labelFontSize\":11,\"labelFontWeight\":\"bold\"}},\"x\":{\"field\":\"overall_avg\",\"type\":\"quantitative\"},\"x2\":{\"field\":\"avg_fare\"},\"color\":{\"field\":\"direction\",\"type\":\"nominal\",\"scale\":{\"domain\":[\"Above avg\",\"Below avg\"],\"range\":[\"#22C55E\",\"#EF4444\"]},\"legend\":{\"orient\":\"top\",\"title\":null}}}},{\"transform\":[{\"filter\":\"datum.deviation >= 0\"}],\"mark\":{\"type\":\"text\",\"fontSize\":9,\"fontWeight\":\"bold\",\"align\":\"left\",\"dx\":6},\"encoding\":{\"y\":{\"field\":\"day_name\",\"type\":\"ordinal\",\"sort\":{\"field\":\"dow\"}},\"x\":{\"field\":\"avg_fare\",\"type\":\"quantitative\"},\"text\":{\"field\":\"change_label\"},\"color\":{\"value\":\"#16A34A\"}}},{\"transform\":[{\"filter\":\"datum.deviation < 0\"}],\"mark\":{\"type\":\"text\",\"fontSize\":9,\"fontWeight\":\"bold\",\"align\":\"right\",\"dx\":-6},\"encoding\":{\"y\":{\"field\":\"day_name\",\"type\":\"ordinal\",\"sort\":{\"field\":\"dow\"}},\"x\":{\"field\":\"avg_fare\",\"type\":\"quantitative\"},\"text\":{\"field\":\"change_label\"},\"color\":{\"value\":\"#DC2626\"}}}]}"
+              },
+              "frame": {
+                "title": "Variance: Avg Fare by Day",
+                "showTitle": true
+              },
+              "version": 1,
+              "widgetType": "custom-vega-viz",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "dow"
+                  },
+                  {
+                    "fieldName": "day_name"
+                  },
+                  {
+                    "fieldName": "avg_fare"
+                  },
+                  {
+                    "fieldName": "overall_avg"
+                  },
+                  {
+                    "fieldName": "deviation"
+                  },
+                  {
+                    "fieldName": "pct_change"
+                  }
+                ]
+              },
+              "data": {
+                "queryName": "main_query"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 20,
+            "width": 12,
+            "height": 6
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS",
+      "layoutVersion": "GRID_V1"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    },
+    "applyModeEnabled": false
+  }
+}
