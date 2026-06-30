@@ -46,16 +46,7 @@ The dashboard demonstrates how Databricks AI/BI Custom Viz can be used to create
 - Radial composition charts
 - Variance-to-baseline charts
 
-## Prerequisites
-
-You need:
-
-- Access to a Databricks workspace.
-- Access to the sample table `samples.nyctaxi.trips`.
-- A running or available SQL warehouse.
-- AI/BI dashboards enabled in your workspace.
-
-## Import Through The UI
+## Import The Dashboard
 
 1. Download `nyc_taxi_custom_viz_dashboard.lvdash.json`.
 2. In Databricks, open **SQL > Dashboards**.
@@ -67,30 +58,6 @@ You need:
 8. Refresh the dashboard.
 
 The dashboard should run as-is because it queries `samples.nyctaxi.trips`.
-
-## Import With The Databricks CLI
-
-You can also import the dashboard as a workspace object.
-
-Set these variables:
-
-```bash
-export DATABRICKS_PROFILE="<your-profile>"
-export WORKSPACE_PATH="/Workspace/Users/<your-email>/dashboards/nyc_taxi_custom_viz_dashboard.lvdash.json"
-```
-
-Then run:
-
-```bash
-databricks workspace import \
-  --profile "$DATABRICKS_PROFILE" \
-  --format AUTO \
-  --file nyc_taxi_custom_viz_dashboard.lvdash.json \
-  "$WORKSPACE_PATH" \
-  --overwrite
-```
-
-After import, open the dashboard in the Databricks UI and attach a SQL warehouse.
 
 ## How To Learn From It
 
